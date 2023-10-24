@@ -1,3 +1,8 @@
+## https://becarioprecario.bitbucket.io/spde-gitbook/ch-spacetime.html
+
+library(tidyverse)
+library(INLA)
+library(ggpubr)
 
 ## DATA IMPORT
 H5N1_JUN23 <- read.csv("https://raw.githubusercontent.com/ProfNascimento/H5N1/main/H5N1_JUN23.csv")
@@ -22,6 +27,7 @@ H5N1_JUN23 %>% group_by(STATE) %>%
 library(stringr)
 H5N1_week = H5N1_JUN23 %>%
   mutate(WEEK = lubridate::week(TIME),
+         MONTH = lubridate::month(TIME),
          type2 = str_extract(SPECIES, "\\b[A-Z]{2}"),
          type3 = str_sub(SPECIES, 6,)) 
 
@@ -36,39 +42,274 @@ H5N1_week %>% group_by(STATE, type3) %>% summarise(TOTAL=sum(RECORD)) %>% arrang
 sort(tapply(H5N1_week$RECORD, as.factor(H5N1_week$type3),sum),decreasing = TRUE) # TOTAL
 
 ###########################################################################
-W = matrix(c(0,1,0,0,0,0,0,0,0,0,0,0,0,1,0,
-             1,0,1,0,0,0,0,0,0,0,0,0,0,0,0,
-             0,1,0,1,0,0,0,0,0,0,0,0,0,0,0,
-             0,0,1,0,1,0,0,0,0,0,0,0,0,0,0,
-             0,0,0,1,0,1,0,0,0,0,0,0,0,0,0,
-             0,0,0,0,1,0,1,0,0,0,0,0,0,0,0,
-             0,0,0,0,0,1,0,0,0,0,0,0,0,0,1,
-             0,0,0,0,0,0,0,0,1,0,0,0,0,0,1,
-             0,0,0,0,0,0,0,1,0,0,0,0,1,0,0,
-             0,0,0,0,0,0,0,0,0,0,1,0,1,0,0,
-             0,0,0,0,0,0,0,0,0,1,0,1,0,0,0,
-             0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,
-             0,0,0,0,0,0,0,0,1,1,0,0,0,0,0,
-             1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-             0,0,0,0,0,0,1,1,0,0,0,0,0,0,0),ncol=15,byrow=TRUE)
+# Model TMS data using SPDE model
+# Import data
+coords = data.frame(y=H5N1_week$LAT,x=H5N1_week$LON)
+k=max(H5N1_week$MONTH)
 
-test1=H5N1_week %>% group_by(Región) %>% summarise(log(mean(RECORD)))
-E=unlist(test1[,2])
+#
+bnd = inla.nonconvex.hull(as.matrix(coords))
+mesh = inla.mesh.2d(boundary = bnd, max.edge = c(2,2)) #, boundary=bnd,
+plot(mesh)
+# SPDE model
+spde <- inla.spde2.pcmatern(mesh = mesh,
+                            prior.range = c(0.5, 0.01), # P(range < 0.05) = 0.01
+                            prior.sigma = c(1, 0.01))   # P(sigma > 1) = 0.01
 
-scaled_x <- c(H5N1_week$week)
-X <- model.matrix(~scaled_x)
-O <- H5N1_week$RECORD
+iset <- inla.spde.make.index('i', n.spde = spde$n.spde, n.group = k)
 
-full_d <- list(n = dim(X)[1],
-               p = dim(X)[2],
-               X = X,               # design matrix
-               y = O,               # observed number of cases
-               W = W)               # adjacency matrix
+A <- inla.spde.make.A(mesh = mesh,
+                      loc = as.matrix(coords),
+                      group = H5N1_week$MONTH)
 
-full_fit <- stan(file="/home/diego/Documents/ARTICLEs/H5N1/car_prec.stan",
-                 data = full_d,
-                 iter = 500,
-                 chains = 1)
+H5N1_week=fastDummies::dummy_cols(H5N1_week, select_columns = c('type2','STATE') )
 
-fitChain=as.matrix(full_fit)
-colMeans(fitChain)
+sdat <- inla.stack(
+  data = list(y =(H5N1_week$RECORD)),
+  A = list(A,1),
+  effects = list(c(iset,list(Intercept=0)),
+                 list(S1=H5N1_week$STATE_1,
+                      S2=H5N1_week$STATE_2,
+                      S3=H5N1_week$STATE_3,
+                      S4=H5N1_week$STATE_4,
+                      S5=H5N1_week$STATE_5,
+                      S6=H5N1_week$STATE_6,
+                      S7=H5N1_week$STATE_7,
+                      S8=H5N1_week$STATE_8,
+                      S9=H5N1_week$STATE_9,
+                      S10=H5N1_week$STATE_10,
+                      S11=H5N1_week$STATE_11,
+                      S12=H5N1_week$STATE_12,
+                      S14=H5N1_week$STATE_14,
+                      S15=H5N1_week$STATE_15,
+                      S16=H5N1_week$STATE_16,
+                      State=H5N1_week$STATE,
+                      Type=H5N1_week$type2,
+                      Week=H5N1_week$WEEK,
+                      BI=H5N1_week$type2_Birds,
+                      CE=H5N1_week$type2_Cetaceans,
+                      MU=H5N1_week$type2_MU,
+                      PI=H5N1_week$type2_PI,
+                      QU=H5N1_week$type2_QU,
+                      UN=H5N1_week$type2_Undef)),
+  tag = 'stdata')
+
+h.spec <- list(rho = list(prior = 'pc.cor1', param=c(0, 0.9)))
+
+formula = y ~ 0 + Week*Type*S1 + Week*Type*S2 + Week*Type*S3 +
+  Week*Type*S4 + Week*Type*S5 + Week*Type*S6 +
+  Week*Type*S7 + Week*Type*S8 + Week*Type*S9 +
+  Week*Type*S10 + Week*Type*S11 + Week*Type*S12 +
+  Week*Type*S14 + Week*Type*S15 + Week*Type*S16 +
+  Week*Type*S16 + BI + CE + MU + PI + QU + UN +
+  f(i, model = spde, group = i.group,
+    control.group = list(model= 'ar1', hyper = h.spec)) +
+  f(State, Week, model = "rw1") 
+
+output <- inla(formula = formula,
+               family = "tweedie",
+               data = inla.stack.data(sdat),
+               quantiles = c(0.1, 0.5, 0.9),
+               control.fixed = list(expand.factor.strategy = 'inla'),
+               control.predictor = list(compute = TRUE,A = inla.stack.A(sdat)),
+               control.compute=list(config = TRUE,cpo=TRUE, dic=TRUE,return.marginals.predictor=TRUE)
+)
+
+summary(output)
+INLAutils::plot_inla_residuals(output,H5N1_week$RECORD)
+
+
+#
+idat <- inla.stack.index(sdat, 'stdata')$data
+
+cor(H5N1_week$RECORD, output$summary.linear.predictor$mean[idat])
+
+### Spatial plot
+stepsize <- 0.4
+nxy <- round(
+  c(diff(range( coords[, 1])),
+    diff(range( coords[, 2]))) / stepsize)
+
+projgrid <- inla.mesh.projector(
+  mesh, xlim = range(coords[, 1]),
+  ylim = range(coords[, 2]), dims = nxy)
+
+xmean <- list()
+for(j in 1:k){
+  xmean[[j]] = inla.mesh.project(
+    projgrid, output$summary.random$i$mean[iset$i.group==j])
+}
+
+library(splancs)
+xy.in = inout(projgrid$lattice$loc, cbind(PRborder[,1],PRborder[,2]))
+
+### Spatial plot
+stepsize <- 0.4
+nxy <- round(
+  c(diff(range( coords[, 1])),
+    diff(range( coords[, 2]))) / stepsize)
+
+projgrid <- inla.mesh.projector(
+  mesh, xlim = range(coords[, 1]),
+  ylim = range(coords[, 2]), dims = nxy)
+
+xmean <- inla.mesh.project(
+  projgrid, output$summary.random$i$mean)
+
+df <-  expand.grid(x = projgrid$x, y = projgrid$y)
+
+ResultDatframe <- data.frame(df,mean_s=as.vector(xmean[[1]])+output$summary.fixed$mean[1])
+
+###################
+library(sf)
+library(rnaturalearthhires)
+library(dplyr)
+
+chile <- rnaturalearthhires::countries10 %>%
+  st_as_sf() %>%
+  filter(SOVEREIGNT %in% c("Chile")) %>% st_crop(
+    xmin=-90, 
+    xmax=-30, 
+    ymin=-60, 
+    ymax=-10)
+
+library(rgdal)
+cord1 = data.frame(x=ResultDatframe$x,y=ResultDatframe$y)
+
+coordinates(cord1) <- ~x+y
+class(cord1)
+proj4string(cord1) <- CRS("+proj=longlat +zone=19 +south +datum=WGS84")
+utm2 <- spTransform(cord1,CRS("+proj=longlat +datum=WGS84"))
+ss=as.data.frame(coordinates(utm2))
+
+##
+ocean <- rnaturalearth::ne_download(
+  type = "ocean",
+  category = "physical",
+  returnclass = "sf")
+
+####
+ResultDatframe <- data.frame(df,
+                             mean_s1=as.vector(xmean[[1]])+output$summary.fixed$mean[1],
+                             mean_s2=as.vector(xmean[[2]])+output$summary.fixed$mean[1],
+                             mean_s3=as.vector(xmean[[3]])+output$summary.fixed$mean[1],
+                             mean_s4=as.vector(xmean[[4]])+output$summary.fixed$mean[1],
+                             mean_s5=as.vector(xmean[[5]])+output$summary.fixed$mean[1],
+                             mean_s6=as.vector(xmean[[6]])+output$summary.fixed$mean[1])
+
+#Chile_map <- map_data("world", region="Chile")
+G1=ggplot() +
+  geom_raster(data = ss*(-1), aes(x=y,y=x,fill=ResultDatframe$mean_s1))+
+  scale_fill_continuous(type = "viridis",limits=c(-3,3)) + labs(fill = "log(rate)") +
+  xlab("") + ylab("") + theme(axis.text.x = element_text(angle = 45, hjust=1),
+                              legend.position = "none") +
+  # OCEAN DRAW  
+  geom_sf(data = ocean,
+          color = NA,
+          fill = "white",
+          size = 0.2) +
+  # INLAND DRAW
+  geom_sf(data = chile,
+          color = "white",
+          fill = NA,
+          size = 0.2) +
+  # CROP the whole thing to size
+  coord_sf(xlim = c(-77.5, -67.5),
+           ylim = c(-16, -55))
+
+G2=ggplot() +
+  geom_raster(data = ss*(-1), aes(x=y,y=x,fill=ResultDatframe$mean_s2))+
+  scale_fill_continuous(type = "viridis",limits=c(-3,3)) + labs(fill = "log(rate)") +
+  xlab("") + ylab("") + theme(axis.text.x = element_text(angle = 45, hjust=1),
+                              legend.position = "none") +
+  # OCEAN DRAW  
+  geom_sf(data = ocean,
+          color = NA,
+          fill = "white",
+          size = 0.2) +
+  # INLAND DRAW
+  geom_sf(data = chile,
+          color = "white",
+          fill = NA,
+          size = 0.2) +
+  # CROP the whole thing to size
+  coord_sf(xlim = c(-77.5, -67.5),
+           ylim = c(-16, -55))
+
+G3=ggplot() +
+  geom_raster(data = ss*(-1), aes(x=y,y=x,fill=ResultDatframe$mean_s3))+
+  scale_fill_continuous(type = "viridis",limits=c(-3,3)) + labs(fill = "log(rate)") +
+  xlab("") + ylab("") + theme(axis.text.x = element_text(angle = 45, hjust=1),
+                              legend.position = "none") +
+  # OCEAN DRAW  
+  geom_sf(data = ocean,
+          color = NA,
+          fill = "white",
+          size = 0.2) +
+  # INLAND DRAW
+  geom_sf(data = chile,
+          color = "white",
+          fill = NA,
+          size = 0.2) +
+  # CROP the whole thing to size
+  coord_sf(xlim = c(-77.5, -67.5),
+           ylim = c(-16, -55))
+
+G4=ggplot() +
+  geom_raster(data = ss*(-1), aes(x=y,y=x,fill=ResultDatframe$mean_s4))+
+  scale_fill_continuous(type = "viridis",limits=c(-3,3)) + labs(fill = "log(rate)") +
+  xlab("") + ylab("") + theme(axis.text.x = element_text(angle = 45, hjust=1),
+                              legend.position = "none") +
+  # OCEAN DRAW  
+  geom_sf(data = ocean,
+          color = NA,
+          fill = "white",
+          size = 0.2) +
+  # INLAND DRAW
+  geom_sf(data = chile,
+          color = "white",
+          fill = NA,
+          size = 0.2) +
+  # CROP the whole thing to size
+  coord_sf(xlim = c(-77.5, -67.5),
+           ylim = c(-16, -55))
+
+G5=ggplot() +
+  geom_raster(data = ss*(-1), aes(x=y,y=x,fill=ResultDatframe$mean_s5))+
+  scale_fill_continuous(type = "viridis",limits=c(-3,3)) + labs(fill = "log(rate)") +
+  xlab("") + ylab("") + theme(axis.text.x = element_text(angle = 45, hjust=1),
+                              legend.position = "none") +
+  # OCEAN DRAW  
+  geom_sf(data = ocean,
+          color = NA,
+          fill = "white",
+          size = 0.2) +
+  # INLAND DRAW
+  geom_sf(data = chile,
+          color = "white",
+          fill = NA,
+          size = 0.2) +
+  # CROP the whole thing to size
+  coord_sf(xlim = c(-77.5, -67.5),
+           ylim = c(-16, -55))
+
+G6=ggplot() +
+  geom_raster(data = ss*(-1), aes(x=y,y=x,fill=ResultDatframe$mean_s6))+
+  scale_fill_continuous(type = "viridis",limits=c(-3,3)) + labs(fill = "log(rate)") +
+  xlab("") + ylab("") + theme(axis.text.x = element_text(angle = 45, hjust=1),
+                              legend.position = "none") +
+  # OCEAN DRAW  
+  geom_sf(data = ocean,
+          color = NA,
+          fill = "white",
+          size = 0.2) +
+  # INLAND DRAW
+  geom_sf(data = chile,
+          color = "white",
+          fill = NA,
+          size = 0.2) +
+  # CROP the whole thing to size
+  coord_sf(xlim = c(-77.5, -67.5),
+           ylim = c(-16, -55))
+
+cowplot::plot_grid(G1,G2,G3,G4,G5,G6,nrow=1)
