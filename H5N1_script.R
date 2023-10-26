@@ -25,11 +25,12 @@ H5N1_JUN23 %>% group_by(STATE) %>%
 
 ## PER SPECIES TYPE
 library(stringr)
-H5N1_week = H5N1_JUN23 %>%
+H5N1_week = H5N1_JUN23 %>% 
   mutate(WEEK = lubridate::week(TIME),
          MONTH = lubridate::month(TIME),
+         CUSUM=sum(RECORD),
          type2 = str_extract(SPECIES, "\\b[A-Z]{2}"),
-         type3 = str_sub(SPECIES, 6,)) 
+         type3 = str_sub(SPECIES, 6,))
 
 H5N1_week$type2=as.factor(H5N1_week$type2)
 levels(H5N1_week$type2)=c("Birds","Cetaceans","Undef","MU","PI","QU")
@@ -56,73 +57,71 @@ spde <- inla.spde2.pcmatern(mesh = mesh,
                             prior.range = c(0.5, 0.01), # P(range < 0.05) = 0.01
                             prior.sigma = c(1, 0.01))   # P(sigma > 1) = 0.01
 
-iset <- inla.spde.make.index('i', n.spde = spde$n.spde, n.group = k)
+iset <- inla.spde.make.index(name="spatial.field", n.spde = spde$n.spde, n.group = k)
 
 A <- inla.spde.make.A(mesh = mesh,
                       loc = as.matrix(coords),
                       group = H5N1_week$MONTH)
 
-H5N1_week=fastDummies::dummy_cols(H5N1_week, select_columns = c('type2','STATE') )
+H5N1_week$STATE=as.factor(H5N1_week$STATE)
+H5N1_week$type2=as.factor(H5N1_week$type2)
 
-sdat <- inla.stack(
-  data = list(y =(H5N1_week$RECORD)),
+sdat2 <- inla.stack(
+  data = list(y = H5N1_week$RECORD),
   A = list(A,1),
   effects = list(c(iset,list(Intercept=0)),
-                 list(S1=H5N1_week$STATE_1,
-                      S2=H5N1_week$STATE_2,
-                      S3=H5N1_week$STATE_3,
-                      S4=H5N1_week$STATE_4,
-                      S5=H5N1_week$STATE_5,
-                      S6=H5N1_week$STATE_6,
-                      S7=H5N1_week$STATE_7,
-                      S8=H5N1_week$STATE_8,
-                      S9=H5N1_week$STATE_9,
-                      S10=H5N1_week$STATE_10,
-                      S11=H5N1_week$STATE_11,
-                      S12=H5N1_week$STATE_12,
-                      S14=H5N1_week$STATE_14,
-                      S15=H5N1_week$STATE_15,
-                      S16=H5N1_week$STATE_16,
-                      State=H5N1_week$STATE,
-                      Type=H5N1_week$type2,
-                      Week=H5N1_week$WEEK,
-                      BI=H5N1_week$type2_Birds,
-                      CE=H5N1_week$type2_Cetaceans,
-                      MU=H5N1_week$type2_MU,
-                      PI=H5N1_week$type2_PI,
-                      QU=H5N1_week$type2_QU,
-                      UN=H5N1_week$type2_Undef)),
-  tag = 'stdata')
+                 list(Type=H5N1_week$type2,
+                      ID.Week = H5N1_week$WEEK,
+                      State = H5N1_week$STATE,
+                      Month = H5N1_week$MONTH)),
+  tag = 'stk')
 
 h.spec <- list(rho = list(prior = 'pc.cor1', param=c(0, 0.9)))
 
-formula = y ~ 0 + Week*Type*S1 + Week*Type*S2 + Week*Type*S3 +
-  Week*Type*S4 + Week*Type*S5 + Week*Type*S6 +
-  Week*Type*S7 + Week*Type*S8 + Week*Type*S9 +
-  Week*Type*S10 + Week*Type*S11 + Week*Type*S12 +
-  Week*Type*S14 + Week*Type*S15 + Week*Type*S16 +
-  Week*Type*S16 + BI + CE + MU + PI + QU + UN +
-  f(i, model = spde, group = i.group,
-    control.group = list(model= 'ar1', hyper = h.spec)) +
-  f(State, Week, model = "rw1") 
+## MODEL 1
+formula = y ~ -1 +
+  f(spatial.field, model = spde, 
+    control.group = list(model = 'ar1', hyper = h.spec)) +
+  f(ID.Week, model = "ar1", 
+    hyper = list(prec=list(param=c(10,100)))) +
+  f(State, Month, model = "rw1")
 
 output <- inla(formula = formula,
                family = "tweedie",
-               data = inla.stack.data(sdat),
+               data = inla.stack.data(sdat2),
                quantiles = c(0.1, 0.5, 0.9),
-               control.fixed = list(expand.factor.strategy = 'inla'),
-               control.predictor = list(compute = TRUE,A = inla.stack.A(sdat)),
-               control.compute=list(config = TRUE,cpo=TRUE, dic=TRUE,return.marginals.predictor=TRUE)
+               control.predictor = list(compute = TRUE,A=inla.stack.A(sdat2)),
+               control.compute=list(config = TRUE,cpo=TRUE, dic=TRUE, waic=TRUE,
+                                    return.marginals.predictor=TRUE)
 )
 
 summary(output)
 INLAutils::plot_inla_residuals(output,H5N1_week$RECORD)
 
+## MODEL 2
+formula2 = y ~ -1 + Type*State +
+  f(spatial.field, model = spde, group = spatial.field.group, 
+    control.group = list(model = 'ar1', hyper = h.spec)) +
+  f(ID.Week, model = "ar1", 
+    hyper = list(prec=list(param=c(10,100)))) +
+  f(State, Month, model = "rw1")
+
+output3 <- inla(formula = formula2,
+                family = "tweedie",
+                data = inla.stack.data(sdat2),
+                quantiles = c(0.1, 0.5, 0.9),
+                control.predictor = list(compute = TRUE,A=inla.stack.A(sdat2)),
+                control.compute=list(config = TRUE,cpo=TRUE, dic=TRUE, waic=TRUE,
+                                     return.marginals.predictor=TRUE)
+)
+
+summary(output3)
+INLAutils::plot_inla_residuals(output3,H5N1_week$RECORD)
+
 
 #
-idat <- inla.stack.index(sdat, 'stdata')$data
-
-cor(H5N1_week$RECORD, output$summary.linear.predictor$mean[idat])
+idat <- inla.stack.index(sdat2, 'stk')$data
+cor(H5N1_week$RECORD, output3$summary.linear.predictor$mean[idat])
 
 ### Spatial plot
 stepsize <- 0.4
@@ -137,28 +136,12 @@ projgrid <- inla.mesh.projector(
 xmean <- list()
 for(j in 1:k){
   xmean[[j]] = inla.mesh.project(
-    projgrid, output$summary.random$i$mean[iset$i.group==j])
+    projgrid, output3$summary.random$spatial.field$mean[iset$spatial.field.group==j])
 }
 
 library(splancs)
 xy.in = inout(projgrid$lattice$loc, cbind(PRborder[,1],PRborder[,2]))
 
-### Spatial plot
-stepsize <- 0.4
-nxy <- round(
-  c(diff(range( coords[, 1])),
-    diff(range( coords[, 2]))) / stepsize)
-
-projgrid <- inla.mesh.projector(
-  mesh, xlim = range(coords[, 1]),
-  ylim = range(coords[, 2]), dims = nxy)
-
-xmean <- inla.mesh.project(
-  projgrid, output$summary.random$i$mean)
-
-df <-  expand.grid(x = projgrid$x, y = projgrid$y)
-
-ResultDatframe <- data.frame(df,mean_s=as.vector(xmean[[1]])+output$summary.fixed$mean[1])
 
 ###################
 library(sf)
@@ -168,10 +151,7 @@ library(dplyr)
 chile <- rnaturalearthhires::countries10 %>%
   st_as_sf() %>%
   filter(SOVEREIGNT %in% c("Chile")) %>% st_crop(
-    xmin=-90, 
-    xmax=-30, 
-    ymin=-60, 
-    ymax=-10)
+    xmin=-90, xmax=-30, ymin=-60, ymax=-10)
 
 library(rgdal)
 cord1 = data.frame(x=ResultDatframe$x,y=ResultDatframe$y)
@@ -182,20 +162,20 @@ proj4string(cord1) <- CRS("+proj=longlat +zone=19 +south +datum=WGS84")
 utm2 <- spTransform(cord1,CRS("+proj=longlat +datum=WGS84"))
 ss=as.data.frame(coordinates(utm2))
 
-##
+## DRAWING THE OCEAN IN THE PLOT
 ocean <- rnaturalearth::ne_download(
   type = "ocean",
   category = "physical",
   returnclass = "sf")
 
-####
+#### UNLIST SPATIO ESTIMATION (PER MONTH --GROUP--)
 ResultDatframe <- data.frame(df,
-                             mean_s1=as.vector(xmean[[1]])+output$summary.fixed$mean[1],
-                             mean_s2=as.vector(xmean[[2]])+output$summary.fixed$mean[1],
-                             mean_s3=as.vector(xmean[[3]])+output$summary.fixed$mean[1],
-                             mean_s4=as.vector(xmean[[4]])+output$summary.fixed$mean[1],
-                             mean_s5=as.vector(xmean[[5]])+output$summary.fixed$mean[1],
-                             mean_s6=as.vector(xmean[[6]])+output$summary.fixed$mean[1])
+                             mean_s1=as.vector(xmean[[1]]),
+                             mean_s2=as.vector(xmean[[2]]),
+                             mean_s3=as.vector(xmean[[3]]),
+                             mean_s4=as.vector(xmean[[4]]),
+                             mean_s5=as.vector(xmean[[5]]),
+                             mean_s6=as.vector(xmean[[6]]))
 
 #Chile_map <- map_data("world", region="Chile")
 G1=ggplot() +
